@@ -16,6 +16,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -41,6 +42,7 @@ import (
 	"github.com/dynatrace/dynatrace-configuration-as-code/v2/pkg/graph"
 	project "github.com/dynatrace/dynatrace-configuration-as-code/v2/pkg/project/v2"
 	clientErrors "github.com/dynatrace/dynatrace-configuration-as-code/v2/pkg/rest"
+	"github.com/dynatrace/dynatrace-configuration-as-code/v2/pkg/stubs"
 	gonum "gonum.org/v1/gonum/graph"
 	"gonum.org/v1/gonum/graph/simple"
 )
@@ -120,6 +122,8 @@ func Deploy(projects []project.Project, environmentClients dynatrace.Environment
 			log.WithFields(field.Environment(env.Name, env.Group)).Info("Deployment successful for environment %q", env.Name)
 		}
 	}
+
+	_ = stubs.WriteAllStubs()
 
 	if len(deploymentErrors) != 0 {
 		return deploymentErrors
@@ -301,6 +305,36 @@ func deployConfig(ctx context.Context, c *config.Config, clients ClientSet, reso
 
 	default:
 		deployErr = fmt.Errorf("unknown config-type (ID: %q)", c.Type.ID())
+	}
+
+	// if id is available, record stub and stub value
+	if idParam, ok := resolvedEntity.Properties[config.IdParameter]; ok {
+		id := idParam.(string)
+		if id != "" {
+
+			// ensure name is always set
+			name := resolvedEntity.EntityName
+			if name == "" {
+				name = fmt.Sprintf("%s_%s", c.Coordinate.Type, id)
+			}
+
+			s := stubs.Stub{
+				ID:   id,
+				Name: name,
+			}
+			stubs.RecordStub(s, c.Coordinate.Type)
+
+			// if possible, ensure that rendered config contains id field
+			v := map[string]interface{}{}
+			if err := json.Unmarshal([]byte(renderedConfig), &v); err == nil {
+				v["id"] = id
+				if bytes, err := json.Marshal(v); err == nil {
+					renderedConfig = string(bytes)
+				}
+			}
+
+			_ = stubs.WriteStubsValue(c.Coordinate.Type, id, renderedConfig)
+		}
 	}
 
 	if deployErr != nil {
